@@ -1,35 +1,22 @@
 const fs = require("fs/promises");
 const path = require("path");
 const express = require("express");
-const multer = require("multer");
+const fetch = require("node-fetch");
 const { Op } = require("sequelize");
 const Poster = require("../models/Poster");
 const generatePoster = require("../services/generatePoster");
+const cloudinaryUpload = require("../middleware/cloudinaryUpload");
+const { deleteCloudinaryAsset, isRemoteUrl } = require("../services/cloudinaryAssets");
 
 const router = express.Router();
 const uploadsDir = path.join(__dirname, "..", "uploads");
 const categories = ["exam", "fee", "wishes", "announcement", "class", "timetable"];
 const dailyPosterLimit = Number(process.env.DAILY_POSTER_LIMIT || 20);
-const imageStorage = multer.diskStorage({
-  destination: uploadsDir,
-  filename: (req, file, cb) => {
-    const extension = path.extname(file.originalname).toLowerCase() || ".png";
-    const prefix = file.fieldname === "background" ? "custom_bg" : "logo";
-    cb(null, `${prefix}_${Date.now()}_${Math.round(Math.random() * 1e9)}${extension}`);
-  },
-});
-const upload = multer({
-  storage: imageStorage,
-  limits: { files: 6, fileSize: 8 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    if (!file.mimetype.startsWith("image/")) return cb(new Error("Only image uploads are allowed."));
-    return cb(null, true);
-  },
-});
-const posterUpload = upload.fields([
+const posterUpload = cloudinaryUpload.fields([
   { name: "logos", maxCount: 5 },
   { name: "background", maxCount: 1 },
 ]);
+const singlePosterUpload = cloudinaryUpload.single("poster");
 
 function parseFieldsJson(value) {
   if (typeof value === "string") return JSON.parse(value);
@@ -43,7 +30,12 @@ function validatePayload(body) {
   return null;
 }
 
-async function removeUpload(publicPath) {
+async function removeUpload(publicPath, cloudinaryId) {
+  if (cloudinaryId) {
+    await deleteCloudinaryAsset(cloudinaryId).catch((error) => {
+      console.warn("Cloudinary delete failed:", cloudinaryId, error.message);
+    });
+  }
   if (!publicPath || !publicPath.startsWith("/uploads/")) return;
   const filePath = path.join(uploadsDir, path.basename(publicPath));
   await fs.rm(filePath, { force: true });
@@ -51,6 +43,13 @@ async function removeUpload(publicPath) {
 
 function runPosterGeneration(poster) {
   const previousGeneratedPaths = [poster.bg_image_path, poster.qr_path, poster.final_poster_path, poster.fields_json?.edit_base_path].filter(Boolean);
+  const previousGeneratedCloudinaryIds = [
+    poster.fields_json?.bg_cloudinary_id,
+    poster.fields_json?.qr_cloudinary_id,
+    poster.fields_json?.final_poster_cloudinary_id,
+    poster.fields_json?.edit_base_cloudinary_id,
+    poster.cloudinaryId,
+  ].filter(Boolean);
 
   generatePoster(poster)
     .then(async (result) => {
@@ -59,6 +58,17 @@ function runPosterGeneration(poster) {
         previousGeneratedPaths
           .filter((publicPath) => ![result.bg_image_path, result.qr_path, result.final_poster_path].includes(publicPath))
           .map((publicPath) => removeUpload(publicPath))
+      );
+      await Promise.all(
+        previousGeneratedCloudinaryIds
+          .filter((publicId) => ![
+            result.fields_json?.bg_cloudinary_id,
+            result.fields_json?.qr_cloudinary_id,
+            result.fields_json?.final_poster_cloudinary_id,
+            result.fields_json?.edit_base_cloudinary_id,
+            result.cloudinaryId,
+          ].includes(publicId))
+          .map((publicId) => removeUpload("", publicId))
       );
     })
     .catch(async (generationError) => {
@@ -76,25 +86,34 @@ function safeDownloadName(poster) {
 }
 
 function getUploadedPaths(files, fieldName) {
-  return (files?.[fieldName] || []).map((file) => `/uploads/${file.filename}`);
+  return (files?.[fieldName] || []).map((file) => file.path);
 }
 
-function uploadedPublicPaths(files) {
+function getUploadedCloudinaryIds(files, fieldName) {
+  return (files?.[fieldName] || []).map((file) => file.filename).filter(Boolean);
+}
+
+function uploadedCloudinaryIds(files) {
   return Object.values(files || {})
     .flat()
-    .map((file) => `/uploads/${file.filename}`);
+    .map((file) => file.filename)
+    .filter(Boolean);
 }
 
 router.post("/", posterUpload, async (req, res) => {
   try {
     req.body.fields_json = parseFieldsJson(req.body.fields_json);
     const uploadedLogoPaths = getUploadedPaths(req.files, "logos");
+    const uploadedLogoCloudinaryIds = getUploadedCloudinaryIds(req.files, "logos");
     const uploadedBackgroundPath = getUploadedPaths(req.files, "background")[0] || "";
+    const uploadedBackgroundCloudinaryId = getUploadedCloudinaryIds(req.files, "background")[0] || "";
     req.body.fields_json = {
       ...req.body.fields_json,
       logo_paths: uploadedLogoPaths,
+      logo_cloudinary_ids: uploadedLogoCloudinaryIds,
       logo_count: uploadedLogoPaths.length,
       custom_background_path: uploadedBackgroundPath || req.body.fields_json.custom_background_path || "",
+      custom_background_cloudinary_id: uploadedBackgroundCloudinaryId || req.body.fields_json.custom_background_cloudinary_id || "",
     };
 
     const error = validatePayload(req.body);
@@ -112,8 +131,41 @@ router.post("/", posterUpload, async (req, res) => {
     return res.status(202).json({ id: poster.id, status: poster.status });
   } catch (error) {
     console.error("Create poster failed:", error);
-    await Promise.all(uploadedPublicPaths(req.files).map((publicPath) => removeUpload(publicPath)));
+    await Promise.all(uploadedCloudinaryIds(req.files).map((publicId) => removeUpload("", publicId)));
     return res.status(500).json({ message: "Unable to create poster." });
+  }
+});
+
+router.post("/upload", singlePosterUpload, async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ message: "Poster image is required." });
+
+    const title = typeof req.body.title === "string" && req.body.title.trim()
+      ? req.body.title.trim()
+      : req.file.originalname || "Uploaded poster";
+    const category = categories.includes(req.body.category) ? req.body.category : "announcement";
+    const poster = await Poster.create({
+      category,
+      title,
+      fields_json: {
+        upload_source: "cloudinary",
+        final_poster_cloudinary_id: req.file.filename,
+      },
+      final_poster_path: req.file.path,
+      imageUrl: req.file.path,
+      cloudinaryId: req.file.filename,
+      status: "done",
+    });
+
+    return res.status(201).json({
+      id: poster.id,
+      imageUrl: poster.imageUrl,
+      cloudinaryId: poster.cloudinaryId,
+    });
+  } catch (error) {
+    console.error("Upload poster failed:", error);
+    if (req.file?.filename) await removeUpload("", req.file.filename);
+    return res.status(500).json({ message: "Unable to upload poster." });
   }
 });
 
@@ -122,8 +174,15 @@ router.get("/:id/download", async (req, res) => {
     const poster = await Poster.findByPk(req.params.id);
     if (!poster || !poster.final_poster_path) return res.status(404).json({ message: "Poster file not found." });
 
-    const filePath = path.join(uploadsDir, path.basename(poster.final_poster_path));
-    return res.download(filePath, safeDownloadName(poster));
+    if (isRemoteUrl(poster.final_poster_path)) {
+      const response = await fetch(poster.final_poster_path);
+      if (!response.ok) return res.status(404).json({ message: "Poster file not found." });
+      res.setHeader("Content-Disposition", `attachment; filename="${safeDownloadName(poster)}"`);
+      res.setHeader("Content-Type", response.headers.get("content-type") || "image/jpeg");
+      return response.body.pipe(res);
+    }
+
+    return res.download(path.join(uploadsDir, path.basename(poster.final_poster_path)), safeDownloadName(poster));
   } catch (error) {
     console.error("Download poster failed:", error);
     return res.status(500).json({ message: "Unable to download poster." });
@@ -165,11 +224,14 @@ router.patch("/:id/regenerate", posterUpload, async (req, res) => {
 
     const incomingFields = parseFieldsJson(req.body.fields_json || {});
     const uploadedBackgroundPath = getUploadedPaths(req.files, "background")[0] || "";
+    const uploadedBackgroundCloudinaryId = getUploadedCloudinaryIds(req.files, "background")[0] || "";
     const previousCustomBackground = poster.fields_json?.custom_background_path;
+    const previousCustomBackgroundCloudinaryId = poster.fields_json?.custom_background_cloudinary_id;
     const fields_json = {
       ...(poster.fields_json || {}),
       ...incomingFields,
       ...(uploadedBackgroundPath ? { custom_background_path: uploadedBackgroundPath } : {}),
+      ...(uploadedBackgroundCloudinaryId ? { custom_background_cloudinary_id: uploadedBackgroundCloudinaryId } : {}),
       used_fallback_background: false,
       generation_notice: "",
     };
@@ -181,14 +243,14 @@ router.patch("/:id/regenerate", posterUpload, async (req, res) => {
     });
 
     if (uploadedBackgroundPath && previousCustomBackground && previousCustomBackground !== uploadedBackgroundPath) {
-      await removeUpload(previousCustomBackground);
+      await removeUpload(previousCustomBackground, previousCustomBackgroundCloudinaryId);
     }
 
     runPosterGeneration(poster);
     return res.status(202).json({ id: poster.id, status: "processing" });
   } catch (error) {
     console.error("Regenerate poster failed:", error);
-    await Promise.all(uploadedPublicPaths(req.files).map((publicPath) => removeUpload(publicPath)));
+    await Promise.all(uploadedCloudinaryIds(req.files).map((publicId) => removeUpload("", publicId)));
     return res.status(500).json({ message: "Unable to regenerate poster." });
   }
 });
@@ -221,12 +283,12 @@ router.delete("/:id", async (req, res) => {
     if (!poster) return res.status(404).json({ message: "Poster not found." });
 
     await Promise.all([
-      removeUpload(poster.bg_image_path),
-      removeUpload(poster.qr_path),
-      removeUpload(poster.final_poster_path),
-      removeUpload(poster.fields_json?.edit_base_path),
-      removeUpload(poster.fields_json?.custom_background_path),
-      ...((poster.fields_json?.logo_paths || []).map((logoPath) => removeUpload(logoPath))),
+      removeUpload(poster.bg_image_path, poster.fields_json?.bg_cloudinary_id),
+      removeUpload(poster.qr_path, poster.fields_json?.qr_cloudinary_id),
+      removeUpload(poster.final_poster_path, poster.fields_json?.final_poster_cloudinary_id || poster.cloudinaryId),
+      removeUpload(poster.fields_json?.edit_base_path, poster.fields_json?.edit_base_cloudinary_id),
+      removeUpload(poster.fields_json?.custom_background_path, poster.fields_json?.custom_background_cloudinary_id),
+      ...((poster.fields_json?.logo_paths || []).map((logoPath, index) => removeUpload(logoPath, poster.fields_json?.logo_cloudinary_ids?.[index]))),
     ]);
     await poster.destroy();
 

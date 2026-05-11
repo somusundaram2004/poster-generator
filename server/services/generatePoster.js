@@ -5,11 +5,14 @@ const fetch = require("node-fetch");
 const sharp = require("sharp");
 const QRCode = require("qrcode");
 const Groq = require("groq-sdk");
+const {
+  readImageInput,
+  uploadFileToCloudinary,
+} = require("./cloudinaryAssets");
 require("dotenv").config();
 
 const uploadsDir = path.join(__dirname, "..", "uploads");
 const assetsDir = path.join(__dirname, "..", "..", "assets");
-const publicUploadPath = (fileName) => `/uploads/${fileName}`;
 
 const modernPalettes = [
   { bg: "#07111f", panel: "rgba(7,17,31,0.74)", title: "#f8d56b", text: "#ffffff", accent: "#41d6c3", header: "rgba(255,255,255,0.08)", headerText: "#ffffff", start: "#07111f", mid: "#153d5f", end: "#41d6c3", titleFont: "Arial Black, Impact, system-ui, sans-serif", bodyFont: "Inter, system-ui, Arial, sans-serif" },
@@ -70,8 +73,8 @@ async function writeSharpToFile(image, finalPath) {
   }
 }
 
-async function transparentWhiteBackground(imagePath) {
-  const { data, info } = await sharp(imagePath)
+async function transparentWhiteBackground(imageInput) {
+  const { data, info } = await sharp(imageInput)
     .ensureAlpha()
     .raw()
     .toBuffer({ resolveWithObject: true });
@@ -633,20 +636,23 @@ async function generateBackground(poster) {
   const fields = poster.fields_json || {};
   const { width, height } = getPosterDimensions(fields);
   const backgroundScale = Math.max(1, Math.min(1.4, Number(fields.background_scale || 1)));
-  const customBackgroundPath = fields.custom_background_path
-    ? path.join(uploadsDir, path.basename(fields.custom_background_path))
-    : "";
+  const customBackgroundPath = fields.custom_background_path || "";
 
   if (customBackgroundPath) {
     try {
-      await writeSharpToFile(sharp(customBackgroundPath)
+      const customBackgroundInput = await readImageInput(customBackgroundPath);
+      await writeSharpToFile(sharp(customBackgroundInput)
         .resize(Math.round(width * backgroundScale), Math.round(height * backgroundScale), { fit: "cover" })
         .resize(width, height, { fit: "cover" })
         .jpeg({ quality: 92 }), bgDiskPath);
+      const uploaded = await uploadFileToCloudinary(bgDiskPath, {
+        publicId: `bg_${poster.id}_${Date.now()}`,
+      });
 
       return {
         bgDiskPath,
-        bgPublicPath: publicUploadPath(bgFileName),
+        bgPublicPath: uploaded.url,
+        bgCloudinaryId: uploaded.publicId,
         fallbackUsed: false,
         customBackgroundUsed: true,
       };
@@ -681,7 +687,18 @@ async function generateBackground(poster) {
     }
   }
 
-  return { bgDiskPath, bgPublicPath: publicUploadPath(bgFileName), fallbackUsed, pollinationsUsed, customBackgroundUsed: false };
+  const uploaded = await uploadFileToCloudinary(bgDiskPath, {
+    publicId: `bg_${poster.id}_${Date.now()}`,
+  });
+
+  return {
+    bgDiskPath,
+    bgPublicPath: uploaded.url,
+    bgCloudinaryId: uploaded.publicId,
+    fallbackUsed,
+    pollinationsUsed,
+    customBackgroundUsed: false,
+  };
 }
 
 async function createQr(poster, fields) {
@@ -702,7 +719,11 @@ async function createQr(poster, fields) {
     },
   });
 
-  return { qrDiskPath, qrPublicPath: publicUploadPath(qrFileName) };
+  const uploaded = await uploadFileToCloudinary(qrDiskPath, {
+    publicId: `qr_${poster.id}_${Date.now()}`,
+  });
+
+  return { qrDiskPath, qrPublicPath: uploaded.url, qrCloudinaryId: uploaded.publicId };
 }
 
 function buildDetails(fields, excludedKeys = new Set()) {
@@ -814,8 +835,8 @@ async function buildLogoComposites(fields, width, height) {
 
   return Promise.all(
     slots.map(async (slot) => {
-      const logoDiskPath = path.join(uploadsDir, path.basename(slot.logoPath));
-      const transparentLogo = await transparentWhiteBackground(logoDiskPath);
+      const logoInput = await readImageInput(slot.logoPath);
+      const transparentLogo = await transparentWhiteBackground(logoInput);
       const logoImage = sharp(transparentLogo);
       const metadata = await logoImage.clone().metadata();
       const aspect = metadata.width && metadata.height ? metadata.width / metadata.height : 1;
@@ -1777,9 +1798,14 @@ async function composePoster(poster, fields, aiText, bgDiskPath, qrDiskPath, opt
       ...qrComposite,
     ])
     .jpeg({ quality: 94 }), finalDiskPath);
+  const uploaded = await uploadFileToCloudinary(finalDiskPath, {
+    publicId: `${options.assetPrefix || "poster"}_${poster.id}_${Date.now()}`,
+  });
 
   return {
-    finalPosterPath: publicUploadPath(finalFileName),
+    finalPosterPath: uploaded.url,
+    finalPosterCloudinaryId: uploaded.publicId,
+    finalDiskPath,
     internetClipartUsed: internetCliparts.used,
     localDecorationUsed: localDecorations.used,
   };
@@ -1792,16 +1818,21 @@ async function generatePoster(poster) {
   const resolvedDesign = resolvePosterDesign(fields, poster);
   const resolvedPalette = applyPaletteOverrides(getDesignPalette(resolvedDesign), fields);
   const aiText = await generateAiText(poster, fields);
-  const { bgDiskPath, bgPublicPath, fallbackUsed, pollinationsUsed, customBackgroundUsed } = await generateBackground(poster);
-  const { qrDiskPath, qrPublicPath } = await createQr(poster, fields);
-  const { finalPosterPath, internetClipartUsed, localDecorationUsed } = await composePoster(poster, fields, aiText, bgDiskPath, qrDiskPath, {
+  const tempFiles = [];
+  const { bgDiskPath, bgPublicPath, bgCloudinaryId, fallbackUsed, pollinationsUsed, customBackgroundUsed } = await generateBackground(poster);
+  tempFiles.push(bgDiskPath);
+  const { qrDiskPath, qrPublicPath, qrCloudinaryId } = await createQr(poster, fields);
+  if (qrDiskPath) tempFiles.push(qrDiskPath);
+  const { finalPosterPath, finalPosterCloudinaryId, finalDiskPath, internetClipartUsed, localDecorationUsed } = await composePoster(poster, fields, aiText, bgDiskPath, qrDiskPath, {
     preferLocalDecorations: fallbackUsed,
   });
+  tempFiles.push(finalDiskPath);
   const editBaseFields = fieldsForEditBase(fields);
-  const { finalPosterPath: editBasePath } = await composePoster(poster, editBaseFields, aiText, bgDiskPath, qrDiskPath, {
+  const { finalPosterPath: editBasePath, finalPosterCloudinaryId: editBaseCloudinaryId, finalDiskPath: editBaseDiskPath } = await composePoster(poster, editBaseFields, aiText, bgDiskPath, qrDiskPath, {
     assetPrefix: "edit_base",
     preferLocalDecorations: fallbackUsed,
   });
+  tempFiles.push(editBaseDiskPath);
   const notices = [
     pollinationsUsed ? "Stability AI was unavailable, so Pollinations AI was used for the background." : "",
     fallbackUsed ? "AI background service was unavailable, so a local fallback background was used." : "",
@@ -1810,7 +1841,7 @@ async function generatePoster(poster) {
   ].filter(Boolean);
   const generationNotice = notices.join(" ");
 
-  return {
+  const result = {
     fields_json: {
       ...fields,
       used_fallback_background: fallbackUsed,
@@ -1820,6 +1851,10 @@ async function generatePoster(poster) {
       internet_clipart_used: internetClipartUsed,
       local_decoration_used: localDecorationUsed,
       edit_base_path: editBasePath,
+      edit_base_cloudinary_id: editBaseCloudinaryId,
+      bg_cloudinary_id: bgCloudinaryId,
+      qr_cloudinary_id: qrCloudinaryId,
+      final_poster_cloudinary_id: finalPosterCloudinaryId,
       edit_base_version: editBaseVersion,
       resolved_design: resolvedDesign,
       resolved_palette: {
@@ -1835,7 +1870,13 @@ async function generatePoster(poster) {
     bg_image_path: bgPublicPath,
     qr_path: qrPublicPath,
     final_poster_path: finalPosterPath,
+    imageUrl: finalPosterPath,
+    cloudinaryId: finalPosterCloudinaryId,
   };
+
+  await Promise.all(tempFiles.filter(Boolean).map((filePath) => fs.rm(filePath, { force: true }).catch(() => {})));
+
+  return result;
 }
 
 module.exports = generatePoster;

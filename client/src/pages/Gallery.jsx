@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import api from "../api.js";
+import api, { assetUrl } from "../api.js";
 
 const categories = ["all", "exam", "fee", "wishes", "announcement", "class", "timetable"];
 
@@ -88,7 +88,7 @@ function Gallery() {
 
       <div className="gallery-grid">
         {posters.map((poster) => {
-          const thumb = poster.final_poster_path ? `${api.defaults.baseURL}${poster.final_poster_path}` : "";
+          const thumb = poster.final_poster_path ? assetUrl(poster.final_poster_path) : "";
           const showThumb = thumb && !brokenThumbs[poster.id];
           return (
             <article

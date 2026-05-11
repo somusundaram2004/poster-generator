@@ -11,9 +11,17 @@ const posterRoutes = require("./routes/posterRoutes");
 const app = express();
 const PORT = Number(process.env.PORT || 5000);
 const uploadsPath = path.join(__dirname, "uploads");
+const envOrigins = [
+  process.env.CLIENT_URL,
+  process.env.CORS_ORIGINS,
+]
+  .filter(Boolean)
+  .flatMap((value) => String(value).split(","))
+  .map((origin) => origin.trim())
+  .filter(Boolean);
 const allowedOrigins = new Set(
   [
-    process.env.CLIENT_URL,
+    ...envOrigins,
     "http://localhost:5174",
     "http://127.0.0.1:5174",
     "http://localhost:5173",
@@ -32,8 +40,12 @@ function isAllowedOrigin(origin, callback) {
     const isViteDevServer =
       ["localhost", "127.0.0.1"].includes(url.hostname) &&
       ["5173", "5174"].includes(url.port);
+    const isVercelPreview =
+      process.env.ALLOW_VERCEL_PREVIEWS === "true" &&
+      url.protocol === "https:" &&
+      url.hostname.endsWith(".vercel.app");
 
-    return callback(null, allowedOrigins.has(normalizedOrigin) || isViteDevServer);
+    return callback(null, allowedOrigins.has(normalizedOrigin) || isViteDevServer || isVercelPreview);
   } catch (error) {
     return callback(null, false);
   }
@@ -48,6 +60,7 @@ app.options("*", cors({ origin: isAllowedOrigin }));
 app.use(express.json({ limit: "2mb" }));
 app.use("/uploads", express.static(uploadsPath));
 app.use("/api/posters", posterRoutes);
+app.use("/api/poster", posterRoutes);
 
 app.get("/health", (req, res) => {
   res.json({ ok: true });

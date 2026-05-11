@@ -34,14 +34,22 @@ const Poster = sequelize.define(
       allowNull: true,
     },
     bg_image_path: {
-      type: DataTypes.STRING(255),
+      type: DataTypes.STRING(1024),
       allowNull: true,
     },
     qr_path: {
-      type: DataTypes.STRING(255),
+      type: DataTypes.STRING(1024),
       allowNull: true,
     },
     final_poster_path: {
+      type: DataTypes.STRING(1024),
+      allowNull: true,
+    },
+    imageUrl: {
+      type: DataTypes.STRING(1024),
+      allowNull: true,
+    },
+    cloudinaryId: {
       type: DataTypes.STRING(255),
       allowNull: true,
     },

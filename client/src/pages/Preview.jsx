@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import api from "../api.js";
+import api, { assetUrl } from "../api.js";
 
 const posterDesigns = [
   { value: "auto", label: "Auto varied design" },
@@ -415,11 +415,12 @@ function Preview() {
   }
 
   const basePosterPath = poster?.final_poster_path || poster?.fields_json?.edit_base_path;
-  const imageUrl = basePosterPath ? `${api.defaults.baseURL}${basePosterPath}?v=${poster.updatedAt}` : "";
+  const cacheKey = poster?.updatedAt ? `?v=${encodeURIComponent(poster.updatedAt)}` : "";
+  const imageUrl = basePosterPath ? `${assetUrl(basePosterPath)}${cacheKey}` : "";
   const canvasImageUrl = imageUrl;
-  const finalPosterUrl = poster?.final_poster_path ? `${api.defaults.baseURL}${poster.final_poster_path}?v=${poster.updatedAt}` : "";
-  const logoPreviewUrl = poster?.fields_json?.logo_paths?.[0] ? `${api.defaults.baseURL}${poster.fields_json.logo_paths[0]}` : "";
-  const qrPreviewUrl = poster?.qr_path ? `${api.defaults.baseURL}${poster.qr_path}` : "";
+  const finalPosterUrl = poster?.final_poster_path ? `${assetUrl(poster.final_poster_path)}${cacheKey}` : "";
+  const logoPreviewUrl = poster?.fields_json?.logo_paths?.[0] ? assetUrl(poster.fields_json.logo_paths[0]) : "";
+  const qrPreviewUrl = poster?.qr_path ? assetUrl(poster.qr_path) : "";
   const isLoading = poster?.status === "processing" || poster?.status === "pending" || !poster;
   const hasLogo = Boolean(poster?.fields_json?.logo_paths?.length);
   const hasQr = Boolean(poster?.qr_path || edit?.contact_url);
