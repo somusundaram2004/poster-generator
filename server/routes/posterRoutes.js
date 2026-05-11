@@ -34,7 +34,8 @@ function runUpload(uploadMiddleware) {
         message: missingCloudinaryConfig
           ? "Cloudinary is not configured on the server. Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET."
           : "Unable to upload image to Cloudinary.",
-        detail: process.env.NODE_ENV === "production" ? undefined : error.message,
+        detail: error.message,
+        code: error.code || error.http_code,
       });
     });
   };
