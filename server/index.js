@@ -67,6 +67,24 @@ app.get("/health", (req, res) => {
   res.json({ ok: true });
 });
 
+app.get("/health/config", (req, res) => {
+  res.json({
+    ok: true,
+    cloudinary: {
+      cloudName: Boolean(process.env.CLOUDINARY_CLOUD_NAME),
+      apiKey: Boolean(process.env.CLOUDINARY_API_KEY),
+      apiSecret: Boolean(process.env.CLOUDINARY_API_SECRET),
+      folder: process.env.CLOUDINARY_FOLDER || "posters",
+    },
+    database: {
+      host: Boolean(process.env.DB_HOST),
+      name: Boolean(process.env.DB_NAME),
+      user: Boolean(process.env.DB_USER),
+    },
+    clientUrl: process.env.CLIENT_URL || "",
+  });
+});
+
 sequelize
   .sync({ alter: true })
   .then(() => {

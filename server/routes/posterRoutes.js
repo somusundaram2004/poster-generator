@@ -18,6 +18,28 @@ const posterUpload = cloudinaryUpload.fields([
 ]);
 const singlePosterUpload = cloudinaryUpload.single("poster");
 
+function runUpload(uploadMiddleware) {
+  return (req, res, next) => {
+    uploadMiddleware(req, res, (error) => {
+      if (!error) return next();
+
+      console.error("Cloudinary upload middleware failed:", error);
+      const missingCloudinaryConfig = [
+        "CLOUDINARY_CLOUD_NAME",
+        "CLOUDINARY_API_KEY",
+        "CLOUDINARY_API_SECRET",
+      ].some((key) => !process.env[key]);
+
+      return res.status(500).json({
+        message: missingCloudinaryConfig
+          ? "Cloudinary is not configured on the server. Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET."
+          : "Unable to upload image to Cloudinary.",
+        detail: process.env.NODE_ENV === "production" ? undefined : error.message,
+      });
+    });
+  };
+}
+
 function parseFieldsJson(value) {
   if (typeof value === "string") return JSON.parse(value);
   return value;
@@ -100,7 +122,7 @@ function uploadedCloudinaryIds(files) {
     .filter(Boolean);
 }
 
-router.post("/", posterUpload, async (req, res) => {
+router.post("/", runUpload(posterUpload), async (req, res) => {
   try {
     req.body.fields_json = parseFieldsJson(req.body.fields_json);
     const uploadedLogoPaths = getUploadedPaths(req.files, "logos");
@@ -136,7 +158,7 @@ router.post("/", posterUpload, async (req, res) => {
   }
 });
 
-router.post("/upload", singlePosterUpload, async (req, res) => {
+router.post("/upload", runUpload(singlePosterUpload), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ message: "Poster image is required." });
 
@@ -217,7 +239,7 @@ router.get("/stats/daily", async (req, res) => {
   }
 });
 
-router.patch("/:id/regenerate", posterUpload, async (req, res) => {
+router.patch("/:id/regenerate", runUpload(posterUpload), async (req, res) => {
   try {
     const poster = await Poster.findByPk(req.params.id);
     if (!poster) return res.status(404).json({ message: "Poster not found." });
