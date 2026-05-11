@@ -541,6 +541,7 @@ async function generateImage(prompt, fields = {}) {
   console.log("Sending to Stability AI:", {
     url: "https://api.stability.ai/v2beta/stable-image/generate/core",
     method: "POST",
+    headers: { Authorization: "Bearer [REDACTED]" },
     prompt,
     output_format: "png",
     aspect_ratio: fields.orientation === "landscape" ? "16:9" : "4:5",
