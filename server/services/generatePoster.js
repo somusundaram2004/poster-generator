@@ -166,6 +166,9 @@ const designPrompts = {
   carnatic_practice: "modern performing arts poster, warm stage light, elegant cultural details, premium typography space",
   dark_event: "high contrast modern event poster, cinematic lighting, clean poster composition, luxury contrast",
   all_best: "bright modern exam poster, optimistic academic visual, refined ribbons and subtle paper texture",
+  art_gallery: "expressive fine arts academy poster, gallery wall composition, paint strokes, sketchbook accents, high readability",
+  art_workshop: "playful drawing workshop poster, clean canvas area, art tools, color swatches, bright creative layout",
+  sketch_notice: "premium sketch exam notice poster, pencil textures, paper layers, disciplined academic art layout",
 };
 
 const topicPrompts = [
@@ -458,12 +461,21 @@ function getPosterDimensions(fields) {
 
 function buildImagePrompt(poster, fields) {
   const seed = `${poster.id}-${poster.category}-${fields.user_title || ""}-${fields.subject || ""}-${fields.visual_genre || ""}`;
+  const isDrawing = getSubjectType(fields, poster) === "drawing";
   const artDirections = [
     "cinematic soft light, premium editorial poster, shallow depth of field",
     "clean Swiss-inspired composition, bold negative space, modern academy branding",
     "vibrant contemporary collage, tasteful texture, professional event poster",
     "minimal atmospheric background, polished gradients, crisp realistic details",
     "high-end institutional poster background, layered depth, modern color contrast",
+  ];
+  const drawingDirections = [
+    "bright art studio tabletop with watercolor pans, brushes, pencil shavings, blank sketch sheets, airy academy notice composition",
+    "gallery wall and easel background, colorful paint strokes, framed blank canvases, premium fine arts academy atmosphere",
+    "macro drawing desk scene with charcoal pencils, kneaded eraser, ruler, paper texture, soft daylight and clean center space",
+    "children art workshop table, color swatches, crayons, brush jars, playful but polished school poster background",
+    "minimal sketchbook flatlay, graphite pencils, paint palette, masking tape, elegant cream paper texture, large empty typography zone",
+    "modern creative classroom corner with easel silhouettes, art supplies, warm lighting, layered depth, no text anywhere",
   ];
   const inputText = [
     poster.category,
@@ -510,7 +522,8 @@ function buildImagePrompt(poster, fields) {
     genreDetails,
     designDetails,
     ...topicDetails,
-    artDirections[seededIndex(seed, artDirections.length)],
+    isDrawing ? drawingDirections[seededIndex(`${seed}-drawing-scene`, drawingDirections.length)] : artDirections[seededIndex(seed, artDirections.length)],
+    isDrawing ? `unique drawing poster variation ${seededIndex(`${seed}-variant`, 100000)} with a different camera angle, different art tools, and different color balance from previous posters` : "",
     orientation,
     "studio level ad design, premium commercial poster lighting, modern composition, brand-safe, professional poster background only",
     "image-only background: no readable words, no letters, no numbers, no labels, no fake logos, no signage, no poster-within-poster, no document text, no chart text, no UI text, no watermark, no QR code",
@@ -1017,22 +1030,33 @@ async function buildLocalAssetDecorations(fields, poster, width, height, options
   if (!assets.length) return { composites: [], used: false };
 
   const s = Math.min(width / 1080, height / 1350);
+  const seed = `${poster.id}-${poster.category}-${fields.user_title || ""}-${fields.subject || ""}-${fields.clipart_keyword || ""}`;
   const clipartScale = clampNumber(fields.clipart_scale, 0.55, 1.35, 0.85);
   const manualX = Number(fields.clipart_x);
   const manualY = Number(fields.clipart_y);
   const hasManualPosition = Number.isFinite(manualX) && Number.isFinite(manualY);
   const size = Math.round(Math.min(width, height) * 0.12 * clipartScale);
+  const automaticSlots = [
+    { x: 0.05, y: 0.7, rotate: -8, scale: 1 },
+    { x: 0.76, y: 0.62, rotate: 10, scale: 1.08 },
+    { x: 0.08, y: 0.18, rotate: -14, scale: 0.86 },
+    { x: 0.7, y: 0.78, rotate: 18, scale: 0.96 },
+  ];
+  const selectedSlot = automaticSlots[seededIndex(`${seed}-slot`, automaticSlots.length)];
+  const selectedAssetIndex = seededIndex(`${seed}-asset`, assets.length);
+  const rotatedAssets = assets.slice(selectedAssetIndex).concat(assets.slice(0, selectedAssetIndex));
+  const resolvedSize = Math.round(size * selectedSlot.scale);
   const slots = [
     {
-      left: hasManualPosition ? Math.round(width * clampNumber(manualX, 0.03, 0.97, 0.16) - size / 2) : Math.round(width * 0.05),
-      top: hasManualPosition ? Math.round(height * clampNumber(manualY, 0.03, 0.97, 0.7) - size / 2) : Math.round(height * 0.7),
-      size,
-      rotate: -8,
+      left: hasManualPosition ? Math.round(width * clampNumber(manualX, 0.03, 0.97, 0.16) - resolvedSize / 2) : Math.round(width * selectedSlot.x),
+      top: hasManualPosition ? Math.round(height * clampNumber(manualY, 0.03, 0.97, 0.7) - resolvedSize / 2) : Math.round(height * selectedSlot.y),
+      size: resolvedSize,
+      rotate: selectedSlot.rotate,
     },
   ];
 
   const composites = await Promise.all(
-    assets.slice(0, slots.length).map(async (assetPath, index) => {
+    rotatedAssets.slice(0, slots.length).map(async (assetPath, index) => {
       const slot = slots[index];
       const buffer = await sharp(assetPath)
         .resize(slot.size, slot.size, { fit: "inside", background: { r: 255, g: 255, b: 255, alpha: 0 } })
@@ -1124,7 +1148,10 @@ function resolvePosterDesign(fields, poster) {
 
   if (poster.category === "fee") return "fee_notice";
 
-  const designs = ["classic_header", "magenta_classic", "clean_schedule", "carnatic_practice", "dark_event", "all_best"];
+  const isDrawing = getSubjectType(fields, poster) === "drawing";
+  const designs = isDrawing
+    ? ["art_gallery", "art_workshop", "sketch_notice", "magenta_classic", "classic_header", "dark_event"]
+    : ["classic_header", "magenta_classic", "clean_schedule", "carnatic_practice", "dark_event", "all_best"];
   const seedText = `${poster.id}-${poster.category}-${fields.visual_genre || ""}-${fields.subject || ""}-${fields.user_title || ""}`;
   return designs[seededIndex(seedText, designs.length)];
 }
@@ -1215,6 +1242,38 @@ function getDesignPalette(design) {
     carnatic_practice: modernPalettes[3],
     dark_event: modernPalettes[2],
     all_best: modernPalettes[5],
+    art_gallery: {
+      ...modernPalettes[1],
+      bg: "#fffaf1",
+      panel: "rgba(20,35,72,0.72)",
+      title: "#ffffff",
+      text: "#ffffff",
+      accent: "#f97316",
+      headerText: "#fde68a",
+      titleFont: "Georgia, 'Times New Roman', serif",
+      bodyFont: "Inter, Segoe UI, system-ui, Arial, sans-serif",
+    },
+    art_workshop: {
+      ...modernPalettes[4],
+      panel: "rgba(255,255,255,0.84)",
+      title: "#7c2d12",
+      text: "#1f2937",
+      accent: "#db2777",
+      headerText: "#7c2d12",
+      titleFont: "Arial Black, Impact, system-ui, sans-serif",
+      bodyFont: "Inter, Segoe UI, system-ui, Arial, sans-serif",
+    },
+    sketch_notice: {
+      ...modernPalettes[0],
+      bg: "#111827",
+      panel: "rgba(17,24,39,0.78)",
+      title: "#f8fafc",
+      text: "#ffffff",
+      accent: "#facc15",
+      headerText: "#f8fafc",
+      titleFont: "Trebuchet MS, Verdana, system-ui, sans-serif",
+      bodyFont: "Inter, Segoe UI, system-ui, Arial, sans-serif",
+    },
   };
   return map[design] || modernPalettes[0];
 }
@@ -1414,9 +1473,6 @@ function buildPosterSvg(poster, fields, aiText, options = {}) {
     const scale = clampNumber(fields[`${key}_scale`], 0.75, 1.7, 1);
     return Math.round(font(value) * scale);
   };
-  if (!landscape && getSubjectType(fields, poster) === "drawing") {
-    return buildDrawingReferenceSvg(poster, fields, aiText);
-  }
   {
     const modernDesign = resolvePosterDesign(fields, poster);
     const seed = `${poster.id}-${poster.category}-${fields.user_title || ""}-${fields.subject || ""}-${modernDesign}`;

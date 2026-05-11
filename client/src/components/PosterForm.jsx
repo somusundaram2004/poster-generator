@@ -61,6 +61,9 @@ const posterDesigns = [
   { value: "carnatic_practice", label: "Carnatic Practice" },
   { value: "dark_event", label: "Dark Event" },
   { value: "all_best", label: "All the Best" },
+  { value: "art_gallery", label: "Art Gallery" },
+  { value: "art_workshop", label: "Art Workshop" },
+  { value: "sketch_notice", label: "Sketch Notice" },
 ];
 
 function initialFields(category) {
