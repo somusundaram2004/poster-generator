@@ -88,6 +88,7 @@ app.get("/health/config", (req, res) => {
 sequelize
   .sync({ alter: true })
   .then(() => {
+    console.log("Database synced successfully.");
     const server = app.listen(PORT, () => {
       console.log(`Poster generator API running on port ${PORT}`);
     });
@@ -100,6 +101,6 @@ sequelize
     });
   })
   .catch((error) => {
-    console.error("Unable to start server:", error);
+    console.error("Database sync failed:", error);
     process.exit(1);
   });
